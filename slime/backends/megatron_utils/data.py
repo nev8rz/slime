@@ -1,4 +1,5 @@
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -11,7 +12,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 
 from slime.utils import train_metric_utils
 from slime.utils.flops_utils import calculate_fwd_flops
-from slime.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from slime.utils.metric_utils import compute_pass_rate, compute_rollout_step, update_rollout_eta_metrics
 from slime.utils.types import RolloutBatch
 
 from ...utils import logging_utils
@@ -23,6 +24,8 @@ from .cp_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ROLLOUT_ETA_STATE: dict[str, float] = {}
 
 
 def get_batch(
@@ -202,6 +205,15 @@ def gather_log_data(
     )
     if reduced is None:
         return None
+    if metric_name == "rollout":
+        reduced.update(
+            update_rollout_eta_metrics(
+                rollout_id=rollout_id,
+                num_rollout=getattr(args, "num_rollout", None),
+                now=time.monotonic(),
+                state=_ROLLOUT_ETA_STATE,
+            )
+        )
     reduced_log_dict = {f"{metric_name}/{k}": v for k, v in reduced.items()}
     logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
     # Calculate step once to avoid duplication

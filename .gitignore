@@ -185,6 +185,8 @@ local/
 *.out
 *.pkl
 *.code-workspace
+LOCAL.MD
+examples/retool_post_train_all/local_recipe/
 
 .idea
 *.iml

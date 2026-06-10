@@ -23,7 +23,7 @@ from slime.utils.dp_schedule import build_dp_schedule
 from slime.utils.health_monitor import RolloutHealthMonitor
 from slime.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, init_http_client
 from slime.utils.logging_utils import configure_logger, init_tracking
-from slime.utils.metric_utils import compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
+from slime.utils.metric_utils import compute_eval_pass_rate, compute_pass_rate, compute_rollout_step, compute_statistics, dict_add_prefix
 from slime.utils.misc import Box, group_by, load_function
 from slime.utils.types import Sample
 
@@ -1209,7 +1209,7 @@ def _log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any]
             log_dict[f"eval/{key}-truncated_ratio"] = sum(truncated) / len(truncated)
         if args.log_passrate:
             log_dict |= dict_add_prefix(
-                compute_pass_rate(
+                compute_eval_pass_rate(
                     flat_rewards=rewards,
                     group_size=args.n_samples_per_eval_prompt,
                 ),

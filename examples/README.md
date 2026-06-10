@@ -14,6 +14,7 @@ These examples provide concrete examples to leverage slime in your own RL workfl
 - **[delta_weight_sync](./delta_weight_sync)**: Non-colocated weight sync that ships only changed positions + values over disk (training/inference disaggregation) or NCCL.
 - **[reproducibility](./reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
 - **[retool](./retool)**: Demonstrates the retool functionality for tool-enabled language model generation.
+- **[retool_post_train_all](./retool_post_train_all)**: End-to-end Qwen3-8B ReTool SFT/RL followed by Qwen3-4B ReTool SFT and OPD from the trained 8B teacher.
 - **[search-r1](./search-r1)**: A minimal reproduction of Search-R1, featuring multi-turn conversation and tool-calling.
 - **[strands_sglang](./strands_sglang)**: Integration example with the Strands-Agents scaffolding framework.
 - **[tau-bench](./tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).

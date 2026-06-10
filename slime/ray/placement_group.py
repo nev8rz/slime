@@ -1,5 +1,6 @@
 import copy
 import logging
+import os
 import socket
 
 import ray
@@ -214,9 +215,23 @@ def create_training_models(args, pgs, rollout_manager):
 def create_rollout_manager(args, pg):
     from .rollout import RolloutManager
 
+    env_vars = {
+        key: value
+        for key in (
+            "PYTHONPATH",
+            "PATH",
+            "LD_LIBRARY_PATH",
+            "no_proxy",
+            "NO_PROXY",
+            "RETOOL_THINKING_MODE",
+        )
+        if (value := os.environ.get(key))
+    }
+
     rollout_manager = RolloutManager.options(
         num_cpus=1,
         num_gpus=0,
+        runtime_env={"env_vars": env_vars},
     ).remote(args, pg)
 
     # calculate num_rollout from num_epoch
