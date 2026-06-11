@@ -144,7 +144,21 @@ class ServerGroup:
                 placement_group_bundle_index=reordered_bundle_indices[gpu_index],
             )
 
-            env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
+            inherited_env_vars = {
+                key: value
+                for key in (
+                    "PYTHONPATH",
+                    "PATH",
+                    "LD_LIBRARY_PATH",
+                    "LIBRARY_PATH",
+                    "CUDA_HOME",
+                    "CUDA_PATH",
+                    "no_proxy",
+                    "NO_PROXY",
+                )
+                if (value := os.environ.get(key))
+            }
+            env_vars = inherited_env_vars | {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
                 key: os.environ.get(key, default_val)
                 for key, default_val in {
                     "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "true",

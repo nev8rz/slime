@@ -64,6 +64,16 @@ def test_postprocess_predictions_accepts_native_tool_call():
     assert postprocess_predictions(prediction) == ("code", "print(1 + 2)\nprint(3 + 4)")
 
 
+def test_postprocess_predictions_accepts_multiline_code_string_with_raw_newlines():
+    prediction = """<tool_call>
+{"name": "code_interpreter", "arguments": {"code": "x = 1
+y = 2
+print(x + y)"}}
+</tool_call>"""
+
+    assert postprocess_predictions(prediction) == ("code", "x = 1\ny = 2\nprint(x + y)")
+
+
 def test_postprocess_predictions_rejects_malformed_tool_call():
     prediction = """Let's solve it.
 <tool_call>

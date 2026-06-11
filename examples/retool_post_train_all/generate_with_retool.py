@@ -235,7 +235,7 @@ def postprocess_predictions(prediction: str) -> tuple[str | None, str]:
     tool_call_match = re.search(TOOL_CALL_PATTERN, prediction, re.DOTALL)
     if tool_call_match:
         try:
-            tool_call = json.loads(tool_call_match.group(1))
+            tool_call = json.loads(tool_call_match.group(1), strict=False)
         except json.JSONDecodeError:
             tool_call = {}
         if tool_call.get("name") == "code_interpreter":

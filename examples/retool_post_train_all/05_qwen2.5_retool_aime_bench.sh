@@ -40,6 +40,75 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
+prepend_env_path() {
+   local var_name="$1"
+   local path_value="$2"
+   if [ -z "${path_value}" ] || [ ! -d "${path_value}" ]; then
+      return
+   fi
+
+   local current_value="${!var_name:-}"
+   case ":${current_value}:" in
+      *":${path_value}:"*) ;;
+      *)
+         if [ -n "${current_value}" ]; then
+            export "${var_name}=${path_value}:${current_value}"
+         else
+            export "${var_name}=${path_value}"
+         fi
+         ;;
+   esac
+}
+
+add_cuda_runtime_lib_dir() {
+   local lib_dir="$1"
+   if compgen -G "${lib_dir}/libcudart.so*" >/dev/null; then
+      prepend_env_path LD_LIBRARY_PATH "${lib_dir}"
+      prepend_env_path LIBRARY_PATH "${lib_dir}"
+   fi
+}
+
+add_cudnn_lib_dir() {
+   local lib_dir="$1"
+   if compgen -G "${lib_dir}/libcudnn*.so*" >/dev/null; then
+      prepend_env_path LD_LIBRARY_PATH "${lib_dir}"
+   fi
+}
+
+setup_cuda_jit_paths() {
+   local python_prefix
+   python_prefix="$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null || true)"
+
+   local prefixes=()
+   if [ -n "${CONDA_PREFIX:-}" ]; then
+      prefixes+=("${CONDA_PREFIX}")
+   fi
+   if [ -n "${python_prefix}" ]; then
+      prefixes+=("${python_prefix}")
+   fi
+   if [ -n "${CUDA_HOME:-}" ]; then
+      prefixes+=("${CUDA_HOME}")
+   fi
+
+   local prefix
+   for prefix in "${prefixes[@]}"; do
+      add_cuda_runtime_lib_dir "${prefix}/lib"
+      add_cuda_runtime_lib_dir "${prefix}/targets/x86_64-linux/lib"
+
+      local runtime_lib_dir
+      for runtime_lib_dir in "${prefix}"/lib/python*/site-packages/nvidia/cuda_runtime/lib; do
+         add_cuda_runtime_lib_dir "${runtime_lib_dir}"
+      done
+
+      local cudnn_lib_dir
+      for cudnn_lib_dir in "${prefix}"/lib/python*/site-packages/nvidia/cudnn/lib; do
+         add_cudnn_lib_dir "${cudnn_lib_dir}"
+      done
+   done
+}
+
+setup_cuda_jit_paths
+
 first_existing_path() {
    local fallback="$1"
    shift
@@ -179,7 +248,6 @@ CKPT_ARGS=(
 )
 
 ROLLOUT_ARGS=(
-   --disable-rollout-global-dataset
    --input-key "${BENCH_INPUT_KEY:-prompt}"
    --label-key "${BENCH_LABEL_KEY:-label}"
    --num-rollout 0
@@ -192,6 +260,9 @@ ROLLOUT_ARGS=(
    --rollout-top-k "${BENCH_ROLLOUT_TOP_K:-20}"
    --global-batch-size "${BENCH_GLOBAL_BATCH_SIZE}"
 )
+if [ "${BENCH_DISABLE_ROLLOUT_GLOBAL_DATASET:-0}" = "1" ]; then
+   ROLLOUT_ARGS+=(--disable-rollout-global-dataset)
+fi
 
 EVAL_ARGS=(
    --eval-interval "${BENCH_EVAL_INTERVAL:-1}"
@@ -310,6 +381,11 @@ ray start --head \
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MEGATRON_PATH}:${SCRIPT_DIR}:${SLIME_ROOT}\",
+    \"PATH\": \"${PATH:-}\",
+    \"LD_LIBRARY_PATH\": \"${LD_LIBRARY_PATH:-}\",
+    \"LIBRARY_PATH\": \"${LIBRARY_PATH:-}\",
+    \"CUDA_HOME\": \"${CUDA_HOME:-}\",
+    \"CUDA_PATH\": \"${CUDA_PATH:-}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"no_proxy\": \"${no_proxy:-}\",
