@@ -368,6 +368,22 @@ def log_rollout_data(
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
 
+        if "raw_reward" in rollout_data:
+            raw_rewards = rollout_data["raw_reward"]
+            if raw_rewards:
+                local_raw_reward = torch.tensor(raw_rewards, dtype=torch.float32)
+                raw_reward_max = torch.tensor(local_raw_reward.max().item())
+                raw_reward_min = torch.tensor(local_raw_reward.min().item())
+            else:
+                raw_reward_max = torch.tensor(float("-inf"))
+                raw_reward_min = torch.tensor(float("inf"))
+            dp_group = mpu.get_data_parallel_group_gloo(with_context_parallel=True)
+            dist.all_reduce(raw_reward_max, op=dist.ReduceOp.MAX, group=dp_group)
+            dist.all_reduce(raw_reward_min, op=dist.ReduceOp.MIN, group=dp_group)
+            if torch.isfinite(raw_reward_max) and torch.isfinite(raw_reward_min):
+                log_dict["raw_reward/max"] = raw_reward_max.item()
+                log_dict["raw_reward/min"] = raw_reward_min.item()
+
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and reduced_log_dict is not None:
             # This is an initial actor/ref zero-KL check. R3 replays rollout

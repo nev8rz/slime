@@ -1,16 +1,18 @@
 #!/bin/bash
 
-# Qwen3-8B ReTool SFT.
+# Qwen2.5-7B-Instruct ReTool SFT.
 
 # for rerun the task
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+if [ "${SKIP_PRELAUNCH_CLEANUP:-0}" != "1" ]; then
+   pkill -9 sglang
+   sleep 3
+   ray stop --force
+   pkill -9 ray
+   pkill -9 python
+   sleep 3
+   pkill -9 ray
+   pkill -9 python
+fi
 
 set -ex
 
@@ -38,23 +40,23 @@ SFT_ACTOR_NUM_NODES=${SFT_ACTOR_NUM_NODES:-1}
 SFT_ACTOR_GPUS_PER_NODE=${SFT_ACTOR_GPUS_PER_NODE:-8}
 SFT_RAY_NUM_GPUS=${SFT_RAY_NUM_GPUS:-8}
 
-export MODEL_ARGS_ROTARY_BASE="${QWEN3_8B_ROTARY_BASE}"
-source "${SLIME_ROOT}/scripts/models/qwen3-8B.sh"
+export MODEL_ARGS_ROTARY_BASE="${QWEN2_5_7B_ROTARY_BASE}"
+source "${SLIME_ROOT}/scripts/models/qwen2.5-7B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint "${QWEN3_8B_HF}"
-   --ref-load "${QWEN3_8B_REF_LOAD}"
-   --save "${QWEN3_8B_SFT_SAVE}"
+   --hf-checkpoint "${QWEN2_5_7B_HF}"
+   --ref-load "${QWEN2_5_7B_REF_LOAD}"
+   --save "${QWEN2_5_7B_SFT_SAVE}"
    --save-interval "${SFT_SAVE_INTERVAL}"
-   --rotary-base "${QWEN3_8B_ROTARY_BASE}"
+   --rotary-base "${QWEN2_5_7B_ROTARY_BASE}"
 )
 
-if [ -n "${QWEN3_8B_SFT_LOAD}" ]; then
-   CKPT_ARGS+=(--load "${QWEN3_8B_SFT_LOAD}")
+if [ -n "${QWEN2_5_7B_SFT_LOAD}" ]; then
+   CKPT_ARGS+=(--load "${QWEN2_5_7B_SFT_LOAD}")
 fi
 
-if [ -n "${QWEN3_8B_SFT_SAVE_HF}" ]; then
-   CKPT_ARGS+=(--save-hf "${QWEN3_8B_SFT_SAVE_HF}")
+if [ -n "${QWEN2_5_7B_SFT_SAVE_HF}" ]; then
+   CKPT_ARGS+=(--save-hf "${QWEN2_5_7B_SFT_SAVE_HF}")
 fi
 
 SFT_ARGS=(
@@ -69,7 +71,7 @@ SFT_ARGS=(
    --global-batch-size "${SFT_GLOBAL_BATCH_SIZE}"
 
    --loss-type sft_loss
-   --loss-mask-type qwen3
+   --loss-mask-type qwen
    --calculate-per-token-loss
    --disable-compute-advantages-and-returns
    --debug-train-only
@@ -106,8 +108,8 @@ WANDB_ARGS=()
 if [ "${USE_WANDB:-0}" = "1" ]; then
    WANDB_ARGS=(
       --use-wandb
-      --wandb-project "${WANDB_PROJECT:-slime-dev}"
-      --wandb-group "${WANDB_GROUP:-qwen3-8B-retool-sft}"
+      --wandb-project "${SFT_WANDB_PROJECT}"
+      --wandb-group "${WANDB_GROUP:-qwen2.5-7B-retool-sft}"
    )
    if [ -n "${WANDB_KEY:-}" ]; then
       WANDB_ARGS+=(--wandb-key "${WANDB_KEY}")
@@ -127,27 +129,59 @@ cd "${SLIME_ROOT}"
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 export no_proxy="127.0.0.1,${MASTER_ADDR}"
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus "${SFT_RAY_NUM_GPUS}" --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+RAY_START_ARGS=(
+   --head
+   --node-ip-address "${MASTER_ADDR}"
+   --num-gpus "${SFT_RAY_NUM_GPUS}"
+   --disable-usage-stats
+   --dashboard-host=0.0.0.0
+   --dashboard-port="${RAY_DASHBOARD_PORT:-8265}"
+)
+if [ -n "${RAY_PORT:-}" ]; then
+   RAY_START_ARGS+=(--port="${RAY_PORT}")
+fi
+if [ -n "${RAY_OBJECT_MANAGER_PORT:-}" ]; then
+   RAY_START_ARGS+=(--object-manager-port="${RAY_OBJECT_MANAGER_PORT}")
+fi
+if [ -n "${RAY_NODE_MANAGER_PORT:-}" ]; then
+   RAY_START_ARGS+=(--node-manager-port="${RAY_NODE_MANAGER_PORT}")
+fi
+if [ -n "${RAY_RUNTIME_ENV_AGENT_PORT:-}" ]; then
+   RAY_START_ARGS+=(--runtime-env-agent-port="${RAY_RUNTIME_ENV_AGENT_PORT}")
+fi
+if [ -n "${RAY_CLIENT_SERVER_PORT:-}" ]; then
+   RAY_START_ARGS+=(--ray-client-server-port="${RAY_CLIENT_SERVER_PORT}")
+fi
+if [ -n "${RAY_DASHBOARD_AGENT_LISTEN_PORT:-}" ]; then
+   RAY_START_ARGS+=(--dashboard-agent-listen-port="${RAY_DASHBOARD_AGENT_LISTEN_PORT}")
+fi
+if [ -n "${RAY_DASHBOARD_AGENT_GRPC_PORT:-}" ]; then
+   RAY_START_ARGS+=(--dashboard-agent-grpc-port="${RAY_DASHBOARD_AGENT_GRPC_PORT}")
+fi
+if [ -n "${RAY_METRICS_EXPORT_PORT:-}" ]; then
+   RAY_START_ARGS+=(--metrics-export-port="${RAY_METRICS_EXPORT_PORT}")
+fi
+if [ -n "${RAY_MIN_WORKER_PORT:-}" ]; then
+   RAY_START_ARGS+=(--min-worker-port="${RAY_MIN_WORKER_PORT}")
+fi
+if [ -n "${RAY_MAX_WORKER_PORT:-}" ]; then
+   RAY_START_ARGS+=(--max-worker-port="${RAY_MAX_WORKER_PORT}")
+fi
+if [ -n "${RAY_TEMP_DIR:-}" ]; then
+   RAY_START_ARGS+=(--temp-dir="${RAY_TEMP_DIR}")
+fi
+ray start "${RAY_START_ARGS[@]}"
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MEGATRON_PATH}:${SCRIPT_DIR}:${SLIME_ROOT}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\",
-    \"HTTP_PROXY\": \"${HTTP_PROXY:-}\",
-    \"HTTPS_PROXY\": \"${HTTPS_PROXY:-}\",
-    \"http_proxy\": \"${http_proxy:-}\",
-    \"https_proxy\": \"${https_proxy:-}\",
-    \"NO_PROXY\": \"${NO_PROXY:-}\",
-    \"no_proxy\": \"${no_proxy:-}\",
-    \"WANDB_HTTP_PROXY\": \"${WANDB_HTTP_PROXY:-${HTTP_PROXY:-}}\",
-    \"WANDB_HTTPS_PROXY\": \"${WANDB_HTTPS_PROXY:-${HTTPS_PROXY:-}}\",
-    \"WANDB_NO_PROXY\": \"${WANDB_NO_PROXY:-${NO_PROXY:-}}\"
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\"
   }
 }"
 
-ray job submit --address="http://127.0.0.1:8265" \
+ray job submit --address="http://127.0.0.1:${RAY_DASHBOARD_PORT:-8265}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- bash "${SCRIPT_DIR}/ray_entrypoint.sh" python3 train_async.py \
    --actor-num-nodes "${SFT_ACTOR_NUM_NODES}" \

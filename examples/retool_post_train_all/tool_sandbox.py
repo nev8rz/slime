@@ -8,6 +8,7 @@ This module provides:
 """
 
 import asyncio
+import ast
 import gc
 import os
 import re
@@ -150,14 +151,20 @@ class PythonSandbox:
             if re.search(pattern, code, re.IGNORECASE):
                 return False, f"Code contains dangerous pattern: {pattern}"
 
-        # Check imported modules
-        import_pattern = r"import\s+(\w+)"
-        from_pattern = r"from\s+(\w+)"
+        # Check real import statements with AST so comments like
+        # "cards from 1 to 2015" do not get treated as imports.
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return True, "Code is safe"
 
-        imports = re.findall(import_pattern, code)
-        froms = re.findall(from_pattern, code)
+        all_imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                all_imports.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                all_imports.add(node.module.split(".", 1)[0])
 
-        all_imports = set(imports + froms)
         for imp in all_imports:
             if imp not in self.allowed_modules:
                 return False, f"Import of '{imp}' is not allowed"

@@ -1,11 +1,13 @@
-# Adapted from https://github.com/volcengine/verl/blob/cb809d66e46dfd3342d008628891a14a054fa424/recipe/retool/retool.py
+# Adapted from the upstream ReTool recipe.
 import json
+import os
 import re
 from typing import Any
 
 from slime.rollout.sglang_rollout import GenerateState
 from slime.utils.http_utils import post
 from slime.utils.types import Sample
+from slime.utils.wandb_utils import setup_wandb_env_vars
 
 try:
     from slime.rollout.rm_hub.math_dapo_utils import compute_score as math_dapo_compute_score
@@ -18,9 +20,15 @@ from tool_sandbox import SEMAPHORE, TOOL_CONFIGS, tool_registry
 # turn terminator (`<|im_end|>`). `no_stop_trim` keeps these in the output so we
 # can append the next turn against a well-formed transcript.
 RETOOL_STOP_STRINGS = ("</tool_call>", "<|im_end|>")
-BOXED_ANSWER_PATTERN = r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}"
-ANSWER_PATTERN = rf"Answer:\s*{BOXED_ANSWER_PATTERN}"
 TOOL_CALL_PATTERN = r"<tool_call>\s*(\{.*?\})\s*</tool_call>"
+DEFAULT_MAX_NEW_TOKENS_PER_TURN = 8192
+DEFAULT_OVERLONG_BUFFER_LEN = 4096
+DEFAULT_OVERLONG_PENALTY_FACTOR = 1.0
+
+OVERLONG_ENABLE_ENV = "RETOOL_OVERLONG_PENALTY_ENABLE"
+OVERLONG_MAX_RESPONSE_LEN_ENV = "RETOOL_OVERLONG_MAX_RESPONSE_LEN"
+OVERLONG_BUFFER_LEN_ENV = "RETOOL_OVERLONG_BUFFER_LEN"
+OVERLONG_PENALTY_FACTOR_ENV = "RETOOL_OVERLONG_PENALTY_FACTOR"
 
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
@@ -81,27 +89,122 @@ def _with_retool_stop(sampling_params: dict[str, Any], tokenizer) -> dict[str, A
     return params
 
 
+def _routing_headers(args, sample) -> dict[str, str] | None:
+    if getattr(sample, "session_id", None) and getattr(args, "router_policy", None) == "consistent_hashing":
+        return {"X-SMG-Routing-Key": sample.session_id}
+    return None
+
+
+def _record_prefix_cache_info(sample: Sample, meta_info: dict[str, Any]) -> None:
+    prefix_cache_info = getattr(sample, "prefix_cache_info", None)
+    add = getattr(prefix_cache_info, "add", None)
+    if callable(add):
+        add(meta_info=meta_info)
+
+
+def _get_max_new_tokens_per_turn() -> int | None:
+    raw = os.getenv("RETOOL_MAX_NEW_TOKENS_PER_TURN", str(DEFAULT_MAX_NEW_TOKENS_PER_TURN)).strip()
+    if not raw:
+        return None
+    value = int(raw)
+    return value if value > 0 else None
+
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return int(raw)
+
+
+def _get_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return float(raw)
+
+
+def _get_overlong_max_response_len(args) -> int | None:
+    raw = os.getenv(OVERLONG_MAX_RESPONSE_LEN_ENV, "").strip()
+    if raw:
+        value = int(raw)
+        return value if value > 0 else None
+
+    if args is None:
+        return None
+    for attr in ("rollout_max_response_len", "eval_max_response_len"):
+        value = getattr(args, attr, None)
+        if value is not None:
+            value = int(value)
+            return value if value > 0 else None
+    return None
+
+
+def _ensure_sample_metadata(sample) -> dict[str, Any]:
+    metadata = getattr(sample, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        sample.metadata = metadata
+    return metadata
+
+
+def _compute_overlong_penalty(args, sample) -> tuple[float, dict[str, int | float]]:
+    if not _get_bool_env(OVERLONG_ENABLE_ENV, False):
+        return 0.0, {}
+
+    max_response_len = _get_overlong_max_response_len(args)
+    buffer_len = _get_int_env(OVERLONG_BUFFER_LEN_ENV, DEFAULT_OVERLONG_BUFFER_LEN)
+    penalty_factor = _get_float_env(OVERLONG_PENALTY_FACTOR_ENV, DEFAULT_OVERLONG_PENALTY_FACTOR)
+    if max_response_len is None or buffer_len <= 0 or penalty_factor <= 0:
+        return 0.0, {}
+
+    response_len = int(getattr(sample, "response_length", 0) or 0)
+    threshold = max(max_response_len - buffer_len, 0)
+    overflow = max(response_len - threshold, 0)
+    if overflow <= 0:
+        penalty = 0.0
+    else:
+        penalty = -penalty_factor * min(overflow, buffer_len) / buffer_len
+
+    return penalty, {
+        "overlong_penalty": penalty,
+        "overlong_response_len": response_len,
+        "overlong_max_response_len": max_response_len,
+        "overlong_buffer_len": buffer_len,
+        "overlong_threshold": threshold,
+    }
+
+
 def _close_assistant_turn(assistant_text: str) -> str:
     """`<|im_end|>` is a stop token, so the assistant text may already end with it."""
     return "\n" if assistant_text.rstrip().endswith(IM_END) else f"{IM_END}\n"
 
 
-def format_tool_response_observation(assistant_text: str, observation: str) -> str:
-    """Render a `<tool_response>` user turn followed by the next assistant prefix."""
-    return (
-        _close_assistant_turn(assistant_text)
-        + f"{IM_START}user\n<tool_response>\n{observation.strip()}\n</tool_response>{IM_END}\n"
-        + _assistant_generation_prefix()
-    )
+def _strip_leading_system_turn(rendered: str) -> str:
+    if not rendered.startswith(f"{IM_START}system\n"):
+        return rendered
+    marker = f"{IM_END}\n"
+    system_end = rendered.find(marker)
+    if system_end < 0:
+        return rendered
+    return rendered[system_end + len(marker) :]
 
 
-def format_user_feedback_observation(assistant_text: str, feedback: str) -> str:
-    """Render a plain user feedback turn followed by the next assistant prefix."""
-    return (
-        _close_assistant_turn(assistant_text)
-        + f"{IM_START}user\n{feedback.strip()}{IM_END}\n"
-        + _assistant_generation_prefix()
+def format_tool_response_observation(tokenizer, assistant_text: str, observation: str) -> str:
+    """Render the tool response via the model chat template."""
+    tool_turn = tokenizer.apply_chat_template(
+        [{"role": "tool", "content": observation.strip()}],
+        tokenize=False,
+        add_generation_prompt=True,
     )
+    return _close_assistant_turn(assistant_text) + _strip_leading_system_turn(tool_turn)
 
 
 def format_conversation_with_tools(
@@ -123,25 +226,12 @@ def format_conversation_with_tools(
     )
 
 
-INVALID_ACTION_FEEDBACK = (
-    "My previous action is invalid. To execute Python, I must return exactly one JSON function call "
-    "inside <tool_call></tool_call>, for example:\n"
-    "<tool_call>\n"
-    '{"name": "code_interpreter", "arguments": {"code": "print(1 + 1)"}}\n'
-    "</tool_call>\n"
-    "To give the final answer, I should use the format 'Answer: \\boxed{answer}'. Let me try again."
-)
-
-
 def postprocess_predictions(prediction: str) -> tuple[str | None, str]:
-    """Classify an assistant turn as a final answer, a code tool call, or neither.
+    """Extract a code tool call from an assistant turn when present.
 
-    Returns ("answer", boxed_text), ("code", python_code), or (None, "").
+    Returns ("code", python_code) or (None, ""). Final answers are left to the
+    reward function, which checks the last visible ``\\boxed{...}``.
     """
-    answer_match = re.search(ANSWER_PATTERN, prediction, re.DOTALL)
-    if answer_match:
-        return "answer", answer_match.group(1).strip()
-
     tool_call_match = re.search(TOOL_CALL_PATTERN, prediction, re.DOTALL)
     if tool_call_match:
         try:
@@ -156,22 +246,21 @@ def postprocess_predictions(prediction: str) -> tuple[str | None, str]:
     return None, ""
 
 
-async def execute_predictions(prediction: str) -> tuple[str, bool, bool]:
+async def execute_predictions(prediction: str, tokenizer=None) -> tuple[str, bool, bool]:
     """Run the action in an assistant turn.
 
     Returns (next_observation, done, tool_called).
     """
     action, content = postprocess_predictions(prediction)
 
-    if action == "answer":
-        return "", True, False
-
     if action == "code":
+        if tokenizer is None:
+            raise ValueError("tokenizer is required to render tool observations")
         async with SEMAPHORE:
             result = await tool_registry.execute_tool("code_interpreter", {"code": content.strip()})
-        return format_tool_response_observation(prediction, result), False, True
+        return format_tool_response_observation(tokenizer, prediction, result), False, True
 
-    return format_user_feedback_observation(prediction, INVALID_ACTION_FEEDBACK), False, False
+    return "", True, False
 
 
 def _log_turn_debug(turn: int, available_tools: int, tools_used: int, payload_length: int) -> None:
@@ -179,6 +268,7 @@ def _log_turn_debug(turn: int, available_tools: int, tools_used: int, payload_le
         import wandb
     except ImportError:
         return
+    setup_wandb_env_vars()
     if wandb.run is not None:
         wandb.log(
             {
@@ -226,6 +316,7 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
         max_context_length = args.rollout_max_context_len
     else:
         max_context_length = args.context_parallel_size * args.max_tokens_per_gpu
+    max_new_tokens_per_turn = _get_max_new_tokens_per_turn()
 
     for turn in range(TOOL_CONFIGS["max_turns"]):
         total_length = len(prompt_tokens_ids) + len(response_token_ids)
@@ -242,8 +333,11 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
         # partition).
         remaining_budget = max_context_length - total_length
         per_turn_sampling_params = _with_retool_stop(dict(sampling_params), state.tokenizer)
+        max_new_tokens = sampling_params.get("max_new_tokens", remaining_budget)
+        if max_new_tokens_per_turn is not None:
+            max_new_tokens = min(max_new_tokens, max_new_tokens_per_turn)
         per_turn_sampling_params["max_new_tokens"] = min(
-            sampling_params.get("max_new_tokens", remaining_budget),
+            max_new_tokens,
             remaining_budget,
         )
 
@@ -254,14 +348,16 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
         }
         _log_turn_debug(turn, len(tool_specs), tool_call_count, len(prompt) + len(response))
 
-        output = await post(url, payload)
-        finish_reason = output["meta_info"]["finish_reason"]["type"]
+        output = await post(url, payload, headers=_routing_headers(args, sample))
+        meta_info = output["meta_info"]
+        _record_prefix_cache_info(sample, meta_info)
+        finish_reason = meta_info["finish_reason"]["type"]
 
         if finish_reason == "abort":
             sample.status = Sample.Status.ABORTED
             return sample
 
-        if "output_token_logprobs" not in output["meta_info"]:
+        if "output_token_logprobs" not in meta_info:
             # sglang returned text but no output_token_logprobs — we cannot
             # recover per-token logprobs for this turn, which would desync
             # rollout_log_probs from response_token_ids and blow up
@@ -271,7 +367,7 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
             sample.status = Sample.Status.ABORTED
             return sample
 
-        token_logprobs = output["meta_info"]["output_token_logprobs"]
+        token_logprobs = meta_info["output_token_logprobs"]
         cur_response_token_ids = [item[1] for item in token_logprobs]
         cur_response = state.tokenizer.decode(cur_response_token_ids)
         if sample.rollout_log_probs is None:
@@ -285,7 +381,7 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
         if finish_reason == "length":
             break
 
-        next_obs, done, tool_called = await execute_predictions(cur_response)
+        next_obs, done, tool_called = await execute_predictions(cur_response, state.tokenizer)
         if done:
             break
         if tool_called:
@@ -331,6 +427,11 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
     sample.response = response
     sample.loss_mask = loss_masks
     sample.tool_call_count = tool_call_count
+    sample.num_turns = 2 * tool_call_count + 2
+    sample.metadata = sample.metadata or {}
+    sample.metadata["round_number"] = tool_call_count + 1
+    sample.metadata["tool_call_count"] = tool_call_count
+    sample.metadata["num_turns"] = sample.num_turns
 
     # Payload info for wandb logging.
     payload_text = prompt + response
@@ -349,23 +450,34 @@ async def generate(args, sample: Sample, sampling_params, evaluation: bool = Fal
 
 
 async def reward_func(args, sample, **kwargs):
-    """Score a sample with math_dapo, nudging the model toward using tools."""
+    """Score a sample with math_dapo, then apply ReTool-specific shaping."""
     if not isinstance(sample, Sample):
         raise TypeError("Sample must be an instance of Sample class.")
 
     solution_str = getattr(sample, "payload_text", None) or (_extract_prompt_text(sample.prompt) + sample.response)
     ground_truth = sample.label if sample.label is not None else ""
-    num_turns = getattr(sample, "tool_call_count", 0)
+    tool_call_count = getattr(sample, "tool_call_count", 0)
+    num_turns = getattr(sample, "num_turns", 2 * tool_call_count + 2)
 
     result = math_dapo_compute_score(solution_str, ground_truth, strict_box_verify=True)
+    base_score = float(result["score"])
+
+    metadata = _ensure_sample_metadata(sample)
+    metadata["raw_reward"] = base_score
 
     # Encourage the model to call tools: on wrong answers, partially offset the
     # penalty based on how many tool calls were made.
-    if result["score"] < 0:
+    if base_score < 0:
         tool_call_reward = (num_turns - 2) / 2 * 0.1
-        result["score"] = min(-0.6, result["score"] + tool_call_reward)
+        result["score"] = min(-0.6, base_score + tool_call_reward)
 
-    if result["pred"] is None:
+    overlong_penalty, overlong_info = _compute_overlong_penalty(args, sample)
+    if overlong_info:
+        metadata.update(overlong_info)
+        result["overlong_penalty"] = overlong_penalty
+    result["score"] += overlong_penalty
+
+    if result.get("pred") is None:
         result["pred"] = ""
 
     return result

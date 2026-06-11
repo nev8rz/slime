@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Distill the Qwen3-8B ReTool RL teacher into the clean Qwen3-4B ReTool SFT student with OPD.
+# Distill the Qwen2.5-7B-Instruct ReTool RL teacher into the clean Qwen2.5-3B-Instruct ReTool SFT student with OPD.
 
 # for rerun the task
 pkill -9 sglang
@@ -60,16 +60,16 @@ TEACHER_CUDA_VISIBLE_DEVICES=${TEACHER_CUDA_VISIBLE_DEVICES:-6,7}
 TEACHER_TP=${TEACHER_TP:-2}
 TEACHER_MEM_FRACTION_STATIC=${TEACHER_MEM_FRACTION_STATIC:-0.6}
 TEACHER_CHUNKED_PREFILL_SIZE=${TEACHER_CHUNKED_PREFILL_SIZE:-4096}
-LOG_FILE=${LOG_FILE:-/tmp/sglang_qwen3_8b_retool_teacher.log}
+LOG_FILE=${LOG_FILE:-/tmp/sglang_qwen2.5_7b_retool_teacher.log}
 
-if [ ! -d "${QWEN3_8B_TEACHER_HF}" ]; then
-   echo "QWEN3_8B_TEACHER_HF does not exist: ${QWEN3_8B_TEACHER_HF}"
-   echo "Run 02_qwen3_8b_retool_rl.sh first or set QWEN3_8B_TEACHER_HF to a concrete HF export."
+if [ ! -d "${QWEN2_5_7B_TEACHER_HF}" ]; then
+   echo "QWEN2_5_7B_TEACHER_HF does not exist: ${QWEN2_5_7B_TEACHER_HF}"
+   echo "Run 02_qwen2.5_7b_retool_rl.sh first or set QWEN2_5_7B_TEACHER_HF to a concrete HF export."
    exit 1
 fi
 
 CUDA_VISIBLE_DEVICES="${TEACHER_CUDA_VISIBLE_DEVICES}" python3 -m sglang.launch_server \
-    --model-path "${QWEN3_8B_TEACHER_HF}" \
+    --model-path "${QWEN2_5_7B_TEACHER_HF}" \
     --host "${TEACHER_HOST}" \
     --port "${TEACHER_PORT}" \
     --tp "${TEACHER_TP}" \
@@ -87,7 +87,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Starting Qwen3-8B ReTool teacher model server..."
+echo "Starting Qwen2.5-7B-Instruct ReTool teacher model server..."
 until curl -sf "http://${TEACHER_IP}:${TEACHER_PORT}/health_generate" > /dev/null; do
     echo "Waiting for the teacher model server to start..."
     tail -n 10 "${LOG_FILE}" || true
@@ -106,34 +106,34 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-export MODEL_ARGS_ROTARY_BASE="${QWEN3_4B_ROTARY_BASE}"
-source "${SLIME_ROOT}/scripts/models/qwen3-4B.sh"
+export MODEL_ARGS_ROTARY_BASE="${QWEN2_5_3B_ROTARY_BASE}"
+source "${SLIME_ROOT}/scripts/models/qwen2.5-3B.sh"
 
-QWEN3_4B_OPD_EFFECTIVE_LOAD="${QWEN3_4B_OPD_LOAD}"
-QWEN3_4B_OPD_RESUME_FROM_SAVE=0
-if [ "${AUTO_RESUME}" = "1" ] && has_megatron_checkpoint "${QWEN3_4B_OPD_SAVE}"; then
-   QWEN3_4B_OPD_EFFECTIVE_LOAD="${QWEN3_4B_OPD_SAVE}"
-   QWEN3_4B_OPD_RESUME_FROM_SAVE=1
+QWEN2_5_3B_OPD_EFFECTIVE_LOAD="${QWEN2_5_3B_OPD_LOAD}"
+QWEN2_5_3B_OPD_RESUME_FROM_SAVE=0
+if [ "${AUTO_RESUME}" = "1" ] && has_megatron_checkpoint "${QWEN2_5_3B_OPD_SAVE}"; then
+   QWEN2_5_3B_OPD_EFFECTIVE_LOAD="${QWEN2_5_3B_OPD_SAVE}"
+   QWEN2_5_3B_OPD_RESUME_FROM_SAVE=1
 fi
-echo "opd initial load: ${QWEN3_4B_OPD_LOAD}"
-echo "opd effective load: ${QWEN3_4B_OPD_EFFECTIVE_LOAD}"
-echo "opd resume from output save: ${QWEN3_4B_OPD_RESUME_FROM_SAVE}"
+echo "opd initial load: ${QWEN2_5_3B_OPD_LOAD}"
+echo "opd effective load: ${QWEN2_5_3B_OPD_EFFECTIVE_LOAD}"
+echo "opd resume from output save: ${QWEN2_5_3B_OPD_RESUME_FROM_SAVE}"
 
 CKPT_ARGS=(
-   --hf-checkpoint "${QWEN3_4B_HF}"
-   --ref-load "${QWEN3_4B_OPD_REF_LOAD}"
-   --save "${QWEN3_4B_OPD_SAVE}"
+   --hf-checkpoint "${QWEN2_5_3B_HF}"
+   --ref-load "${QWEN2_5_3B_OPD_REF_LOAD}"
+   --save "${QWEN2_5_3B_OPD_SAVE}"
    --save-interval "${OPD_SAVE_INTERVAL}"
-   --save-hf "${QWEN3_4B_OPD_SAVE_HF}"
-   --rotary-base "${QWEN3_4B_ROTARY_BASE}"
+   --save-hf "${QWEN2_5_3B_OPD_SAVE_HF}"
+   --rotary-base "${QWEN2_5_3B_ROTARY_BASE}"
 )
 
-if [ -n "${QWEN3_4B_OPD_EFFECTIVE_LOAD}" ]; then
-   CKPT_ARGS+=(--load "${QWEN3_4B_OPD_EFFECTIVE_LOAD}")
+if [ -n "${QWEN2_5_3B_OPD_EFFECTIVE_LOAD}" ]; then
+   CKPT_ARGS+=(--load "${QWEN2_5_3B_OPD_EFFECTIVE_LOAD}")
 fi
 if [ -n "${OPD_START_ROLLOUT_ID}" ]; then
    CKPT_ARGS+=(--start-rollout-id "${OPD_START_ROLLOUT_ID}")
-elif [ "${QWEN3_4B_OPD_RESUME_FROM_SAVE}" != "1" ]; then
+elif [ "${QWEN2_5_3B_OPD_RESUME_FROM_SAVE}" != "1" ]; then
    CKPT_ARGS+=(--start-rollout-id 0)
 fi
 
@@ -233,8 +233,8 @@ WANDB_ARGS=()
 if [ "${USE_WANDB:-0}" = "1" ]; then
    WANDB_ARGS=(
       --use-wandb
-      --wandb-project "${WANDB_PROJECT:-slime-opd}"
-      --wandb-group "${WANDB_GROUP:-qwen3-4B-opd-from-qwen3-8B-retool}"
+      --wandb-project "${OPD_WANDB_PROJECT}"
+      --wandb-group "${WANDB_GROUP:-qwen2.5-3B-opd-from-qwen2.5-7B-retool}"
    )
    if [ -n "${WANDB_KEY:-}" ]; then
       WANDB_ARGS+=(--wandb-key "${WANDB_KEY}")
@@ -285,7 +285,7 @@ RUNTIME_ENV_JSON="{
     \"WANDB_HTTP_PROXY\": \"${WANDB_HTTP_PROXY:-${HTTP_PROXY:-}}\",
     \"WANDB_HTTPS_PROXY\": \"${WANDB_HTTPS_PROXY:-${HTTPS_PROXY:-}}\",
     \"WANDB_NO_PROXY\": \"${WANDB_NO_PROXY:-${NO_PROXY:-}}\",
-    \"RETOOL_THINKING_MODE\": \"${RETOOL_THINKING_MODE:-think}\"
+    \"RETOOL_THINKING_MODE\": \"${RETOOL_THINKING_MODE:-no_think}\"
   }
 }"
 

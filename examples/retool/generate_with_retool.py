@@ -10,6 +10,7 @@ except ImportError as e:
 from slime.rollout.sglang_rollout import GenerateState
 from slime.utils.http_utils import post
 from slime.utils.types import Sample
+from slime.utils.wandb_utils import setup_wandb_env_vars
 
 # Import reward models
 try:
@@ -272,26 +273,21 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
             "return_logprob": True,  # Request log probabilities for training
         }
 
-        # Log payload to wandb for debugging
         try:
             import wandb
-
+        except ImportError:
+            pass
+        else:
+            setup_wandb_env_vars()
             if wandb.run is not None:
-                # Count available tools (from tool_specs)
-                available_tools = len(tool_specs)
-                # Count tools used in the current response
-                tools_used = response.count("<interpreter>")
-
                 wandb.log(
                     {
                         "debug/payload_length": len(prompt + response),
-                        "debug/available_tools": available_tools,
-                        "debug/tools_used": tools_used,
+                        "debug/available_tools": len(tool_specs),
+                        "debug/tools_used": response.count("<interpreter>"),
                         "debug/turn": turn,
                     }
                 )
-        except ImportError:
-            pass  # wandb not available
 
         output = await post(url, payload)
 

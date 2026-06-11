@@ -23,7 +23,7 @@ CODE_INTERPRETER_TOOL = {
 }
 
 CODE_TAG_RE = re.compile(r"<code>(.*?)</code>", re.DOTALL)
-PYTHON_CODE_RE = re.compile(r"```(?:python)?\s*(.*?)\s*```", re.DOTALL)
+PYTHON_CODE_RE = re.compile(r"```python(.*?)```", re.DOTALL)
 INTERPRETER_TAG_RE = re.compile(r"<interpreter>(.*?)</interpreter>", re.DOTALL)
 ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 USER_QUESTION_MARKER = "*user question:*"
@@ -50,65 +50,37 @@ def load_retool_sft_dataset():
 
 
 def normalize_user_content(content: str) -> str:
-    marker_index = content.lower().find(USER_QUESTION_MARKER)
-    if marker_index >= 0:
-        question = content[marker_index + len(USER_QUESTION_MARKER) :].strip()
-        return f"Solve the following problem step by step.\n\n{question}"
-
-    content = re.sub(
-        r"The Python code should be complete scripts.*?<\/code>`\.\s*",
-        "",
-        content,
-        flags=re.DOTALL,
+    marker_index = content.find(USER_QUESTION_MARKER)
+    assert marker_index != -1
+    return (
+        content[marker_index + len(USER_QUESTION_MARKER) :]
+        .replace("<answer>", "")
+        .replace("</answer>", "")
+        .strip()
     )
-    content = re.sub(
-        r"You now have the ability to selectively write executable Python code.*?arrive at the final answer\.\s*",
-        "",
-        content,
-        flags=re.DOTALL,
-    )
-    return content.strip()
 
 
-def build_tool_call(code: str, call_id: str):
+def build_tool_call(code: str):
     return {
-        "id": call_id,
         "type": "function",
         "function": {
             "name": "code_interpreter",
-            "arguments": {"code": code.strip()},
+            "arguments": {"code": code},
         },
     }
 
 
-def build_assistant_message(content: str = "", reasoning_content: str = "", tool_calls: list[dict] | None = None):
-    # Qwen2.5-Instruct has no thinking mode, so its chat template ignores any
-    # `reasoning_content` field. Fold the reasoning text into `content` so the
-    # model is trained on it as part of the visible response.
-    reasoning_content = reasoning_content.strip()
-    content = content.strip()
-    if reasoning_content and content:
-        content = f"{reasoning_content}\n\n{content}"
-    elif reasoning_content:
-        content = reasoning_content
-
+def build_assistant_message(content: str = "", tool_calls: list[dict] | None = None):
     message = {
         "role": "assistant",
-        "content": content,
+        "content": content.strip(),
     }
     if tool_calls:
         message["tool_calls"] = tool_calls
     return message
 
 
-def normalize_answer_content(answer: str) -> str:
-    answer = answer.strip()
-    if answer.startswith("Answer:"):
-        return answer
-    return f"Answer: {answer}"
-
-
-def extract_code_message(content: str, call_id: str) -> tuple[dict | None, str]:
+def extract_code_message(content: str) -> tuple[dict | None, str]:
     code_match = CODE_TAG_RE.search(content)
     if code_match is None:
         return None, content
@@ -119,21 +91,19 @@ def extract_code_message(content: str, call_id: str) -> tuple[dict | None, str]:
         code = python_match.group(1).strip()
 
     message = build_assistant_message(
-        reasoning_content=content[: code_match.start()],
-        tool_calls=[build_tool_call(code, call_id)],
+        content=content[: code_match.start()],
+        tool_calls=[build_tool_call(code)],
     )
     return message, content[code_match.end() :]
 
 
-def extract_interpreter_message(content: str, call_id: str) -> tuple[dict | None, str]:
+def extract_interpreter_message(content: str) -> tuple[dict | None, str]:
     interpreter_match = INTERPRETER_TAG_RE.search(content)
     if interpreter_match is None:
         return None, content
 
     message = {
         "role": "tool",
-        "name": "code_interpreter",
-        "tool_call_id": call_id,
         "content": interpreter_match.group(1).strip(),
     }
     return message, content[interpreter_match.end() :]
@@ -144,45 +114,29 @@ def extract_answer_message(content: str) -> tuple[dict | None, str]:
     if answer_match is None:
         return None, content
 
-    message = build_assistant_message(
-        content=normalize_answer_content(answer_match.group(1)),
-        reasoning_content=content[: answer_match.start()],
-    )
+    answer = content[: answer_match.start()] + answer_match.group(1)
+    message = build_assistant_message(content=answer)
     return message, content[answer_match.end() :]
 
 
 def convert_assistant_turn(content: str) -> list[dict]:
     messages = []
-    call_index = 0
     role = "assistant"
 
     while content.strip():
         if role == "assistant":
-            call_id = f"call_{call_index}"
-            message, content = extract_code_message(content, call_id)
+            message, content = extract_code_message(content)
             if message is None:
                 message, content = extract_answer_message(content)
-            if message is None:
-                messages.append(build_assistant_message(content=content))
-                break
+            assert message is not None
 
             messages.append(message)
-            if message.get("tool_calls"):
-                role = "tool"
-            else:
-                role = "assistant"
+            role = "tool"
         else:
-            call_id = f"call_{call_index}"
-            message, content = extract_interpreter_message(content, call_id)
-            if message is None:
-                raise ValueError(f"Missing interpreter output after {call_id}")
-
+            message, content = extract_interpreter_message(content)
+            assert message is not None
             messages.append(message)
-            call_index += 1
             role = "assistant"
-
-    if not messages:
-        messages.append(build_assistant_message(content=content))
 
     return messages
 

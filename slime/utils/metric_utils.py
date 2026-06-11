@@ -106,17 +106,15 @@ def compute_eval_pass_rate(
     rewards_of_group = np.array(flat_rewards).reshape(num_groups, group_size)
 
     log_dict = {}
+    num_correct = np.sum(rewards_of_group == 1, axis=1)
+    num_samples = np.full(num_groups, group_size)
+    log_dict[f"mean@{group_size}"] = np.mean(num_correct / num_samples).item()
     for k in pass_rate_name_list:
-        num_correct = np.sum(rewards_of_group == 1, axis=1)
-        num_samples = np.full(num_groups, group_size)
+        pass_power_k_estimates = _estimate_all_at_k(num_samples, num_correct, k)
+        pass_k_estimates = _estimate_pass_at_k(num_samples, num_correct, k)
 
-        all_k_estimates = _estimate_all_at_k(num_samples, num_correct, k)
-        any_k_estimates = _estimate_pass_at_k(num_samples, num_correct, k)
-        mean_k_estimates = num_correct / num_samples
-
-        log_dict[f"pass@{k}"] = np.mean(all_k_estimates).item()
-        log_dict[f"any@{k}"] = np.mean(any_k_estimates).item()
-        log_dict[f"mean@{k}"] = np.mean(mean_k_estimates).item()
+        log_dict[f"pass@{k}"] = np.mean(pass_k_estimates).item()
+        log_dict[f"pass^{k}"] = np.mean(pass_power_k_estimates).item()
 
     return log_dict
 

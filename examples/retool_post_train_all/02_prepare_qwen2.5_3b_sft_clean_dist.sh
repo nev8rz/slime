@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Export the Qwen2.5-7B-Instruct ReTool SFT checkpoint to HF, then convert that HF
-# checkpoint back to a release torch-dist checkpoint for RL initialization.
+# Export the Qwen2.5-3B-Instruct ReTool SFT checkpoint to HF, then convert that HF
+# checkpoint back to a release torch-dist checkpoint for RL/OPD initialization.
 
 set -ex
 
@@ -44,30 +44,30 @@ prepare_output_dir() {
    mkdir -p "$(dirname "${path}")"
 }
 
-SFT_ITER_DIR="$(latest_megatron_ckpt_dir "${QWEN2_5_7B_SFT_SAVE}")"
+SFT_ITER_DIR="$(latest_megatron_ckpt_dir "${QWEN2_5_3B_SFT_SAVE}")"
 if [ ! -d "${SFT_ITER_DIR}" ]; then
    echo "SFT checkpoint directory does not exist: ${SFT_ITER_DIR}" >&2
    exit 1
 fi
 
-prepare_output_dir "${QWEN2_5_7B_SFT_HF_EXPORT}"
-prepare_output_dir "${QWEN2_5_7B_SFT_CLEAN_DIST}"
+prepare_output_dir "${QWEN2_5_3B_SFT_HF_EXPORT}"
+prepare_output_dir "${QWEN2_5_3B_SFT_CLEAN_DIST}"
 
 cd "${SLIME_ROOT}"
 
 PYTHONPATH="${MEGATRON_PATH}:${PYTHONPATH:-}" python3 tools/convert_torch_dist_to_hf.py \
    --input-dir "${SFT_ITER_DIR}" \
-   --output-dir "${QWEN2_5_7B_SFT_HF_EXPORT}" \
-   --origin-hf-dir "${QWEN2_5_7B_HF}" \
-   --vocab-size 152064
+   --output-dir "${QWEN2_5_3B_SFT_HF_EXPORT}" \
+   --origin-hf-dir "${QWEN2_5_3B_HF}" \
+   --vocab-size 151936
 
-export MODEL_ARGS_ROTARY_BASE="${QWEN2_5_7B_ROTARY_BASE}"
-source "${SLIME_ROOT}/scripts/models/qwen2.5-7B.sh"
+export MODEL_ARGS_ROTARY_BASE="${QWEN2_5_3B_ROTARY_BASE}"
+source "${SLIME_ROOT}/scripts/models/qwen2.5-3B.sh"
 
 PYTHONPATH="${MEGATRON_PATH}:${PYTHONPATH:-}" torchrun \
    --nproc_per_node="${CONVERT_NPROC_PER_NODE}" \
    tools/convert_hf_to_torch_dist.py \
    "${MODEL_ARGS[@]}" \
-   --hf-checkpoint "${QWEN2_5_7B_SFT_HF_EXPORT}" \
-   --rotary-base "${QWEN2_5_7B_ROTARY_BASE}" \
-   --save "${QWEN2_5_7B_SFT_CLEAN_DIST}"
+   --hf-checkpoint "${QWEN2_5_3B_SFT_HF_EXPORT}" \
+   --rotary-base "${QWEN2_5_3B_ROTARY_BASE}" \
+   --save "${QWEN2_5_3B_SFT_CLEAN_DIST}"

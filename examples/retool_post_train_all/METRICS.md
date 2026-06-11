@@ -53,9 +53,9 @@ Eval 是最重要的离线质量信号。本 recipe 默认会在 AIME 2024 和 A
 | `eval/<dataset>/avg_cached_tokens_per_sample` | 每个 eval sample 平均 cache token 数。 | 越大通常越省。如果一直是 0，说明 prefix cache 没帮上忙。 |
 | `eval/<dataset>/repetition_frac` | eval 响应被判为严重重复的比例。 | 越小越好。尖峰说明生成退化。 |
 | `eval/<dataset>/truncated_ratio` | dataset 前缀下的 sample-level 截断比例。 | 越小越好。它和 `<dataset>-truncated_ratio` 可能同时出现，取决于 eval 数据结构。 |
-| `eval/<dataset>-pass@1`, `eval/<dataset>-pass@2`, ... | 开启 `--log-passrate` 后记录的 eval all-correct@k：从同一题的 k 次采样中抽 k 个，全部正确的概率估计。默认 `EVAL_N_SAMPLES_PER_PROMPT=8` 时会记录到 `pass@8`，表示 8 次全对。 | 越大越好，但会随 k 变大而更严格，通常单调不升。`pass@1` 等价于单次采样准确率。 |
-| `eval/<dataset>-any@1`, `eval/<dataset>-any@2`, ... | eval any-correct@k：k 次采样里至少一次正确的概率估计。旧版 `eval/<dataset>-pass@k` 实际是这个语义。 | 越大越好，并且应随 k 单调不降。用于衡量采样放大后的可命中能力。 |
-| `eval/<dataset>-mean@1`, `eval/<dataset>-mean@2`, ... | eval mean-correct@k：同一道题 k 次采样的平均正确比例的期望，再跨题平均。 | 越大越好。它反映平均单样本质量；在每题采样数相同且 reward 为 0/1 时，通常和 `eval/<dataset>` 数值一致，但和 `pass@k`、`any@k` 一起看更直观。 |
+| `eval/<dataset>-pass@1`, `eval/<dataset>-pass@2`, ... | 开启 `--log-passrate` 后记录的 eval pass@k：从同一题的 k 次采样中抽 k 个，至少一个正确的概率估计。默认 `EVAL_N_SAMPLES_PER_PROMPT=8` 时会记录到 `pass@8`。 | 越大越好，并且应随 k 单调不降。用于衡量采样放大后的可命中能力。`pass@1` 等价于单次采样准确率。 |
+| `eval/<dataset>-pass^1`, `eval/<dataset>-pass^2`, ... | eval all-correct@k：从同一题的 k 次采样中抽 k 个，全部正确的概率估计。旧版 `eval/<dataset>-pass@k` 实际是这个更严格的语义。 | 越大越好，但会随 k 变大而更严格，通常单调不升。默认 `pass^8` 表示 8 次全对。 |
+| `eval/<dataset>-mean@N` | eval mean-correct@N：同一道题 N 次采样的平均正确比例，再跨题平均，其中 N 是实际 eval samples per prompt。 | 越大越好。它反映 N 次采样预算下的平均单样本质量；采样放大看 `pass@k`。 |
 
 ## Train 指标
 
@@ -101,6 +101,10 @@ Rollout 指标有两类来源：
 | `rollout/zero_std/count_<reward>` | GRPO group 内所有样本 reward 相同的 group 数。 | 越小越好。全错或全对都缺少相对优势学习信号。 |
 | `rollout/rewards` | reward 后处理 / advantage 准备后的平均 reward。 | 诊断指标。GRPO 中可能被中心化到接近 0；直观质量优先看 `raw_reward`。 |
 | `rollout/raw_reward` | verifier 原始 reward 均值。 | 越大越好。二值数学 reward 下大致就是训练 rollout 成功率。 |
+| `rollout/raw_reward/max`, `rollout/raw_reward/min` | verifier 原始 reward 最大值和最小值。 | 用来快速判断本轮是否全错、全对，或 reward 是否出现异常范围。 |
+| `rollout/tool_call_count/{mean,median,max,min}` | 每个 sample 的工具调用次数统计。 | 太高说明工具循环低效；长期为 0 说明模型基本没用工具。 |
+| `rollout/round_number/{mean,median,max,min}` | 每个 sample 的 assistant 轮数统计，定义为 `tool_call_count + 1`。 | 无工具是 1；用一次工具再 final answer 是 2。比 message/event 数更适合看交互轮数。 |
+| `rollout/num_turns/{mean,median,max,min}` | 每个 sample 的 message/event 数统计，定义为 `2 * tool_call_count + 2`。 | 主要用于和 reward 里的 tool-call partial reward 口径对齐，不要和 `round_number` 混用。 |
 | `rollout/advantages` | policy gradient 使用的 advantage 均值。 | 诊断指标。归一化后均值常接近 0；更重要的是它是否带来有效更新和 eval 提升。 |
 | `rollout/returns` | 训练使用的 return 均值。 | 诊断指标。无 critic GRPO 里通常和 advantages 接近。 |
 | `rollout/response_lengths` | train 侧 batch conversion 后的 response length 均值。 | 诊断指标。应和 `rollout/response_len/mean` 大体一致。 |
@@ -148,9 +152,9 @@ Rollout 指标有两类来源：
 | --- | --- | --- |
 | `passrate/pass@1` | rollout batch 内，单次采样能解题的概率估计。 | 越大越好，最接近单样本质量。 |
 | `passrate/pass@2`, `passrate/pass@4`, `passrate/pass@8`, ... | k 次采样至少一次正确的概率估计。 | 越大越好，且应随 k 单调不降。pass@k 高但 pass@1 低，说明采样有多样性但单次可靠性不足。 |
-| `eval/<dataset>-pass@k` | eval 上的 all-correct@k。 | 越大越好，但更严格；默认 `pass@8` 表示 8 次全对。选 checkpoint 时优先看 `pass@1`、最高 k 的 `pass@k` 和截断率。 |
-| `eval/<dataset>-any@k` | eval 上的 any-correct@k。 | 越大越好；表示 k 次里至少一次正确。它和 train 侧 `passrate/pass@k` 的语义一致，但数据集不同。 |
-| `eval/<dataset>-mean@k` | eval 上的 mean-correct@k。 | 越大越好；表示同题多次采样的平均正确比例，适合作为 all/any 之间的中间口径。 |
+| `eval/<dataset>-pass@k` | eval 上的 pass@k。 | 越大越好；表示 k 次里至少一次正确。它和 train 侧 `passrate/pass@k` 的语义一致，但数据集不同。 |
+| `eval/<dataset>-pass^k` | eval 上的 all-correct@k。 | 越大越好，但更严格；默认 `pass^8` 表示 8 次全对。 |
+| `eval/<dataset>-mean@N` | eval 上的 mean-correct@N，N 是实际 eval samples per prompt。 | 越大越好；表示同题 N 次采样的平均正确比例。 |
 
 ## Perf 指标
 
@@ -232,7 +236,7 @@ Perf 只能解释效率，不能替代质量指标。吞吐变好但 eval 掉了
 
 ## Multi-turn 指标
 
-开启 `--log-multi-turn` 后出现。ReTool 有工具轨迹，所以如果后面打开这个开关，这些指标很有用。
+开启 `--log-multi-turn` 后出现。4pod RL 脚本默认打开。这里的 `round_number` 是 assistant 轮数：无工具为 1，用一次工具再 final answer 为 2。
 
 | 指标 | 含义 | 怎么看 |
 | --- | --- | --- |

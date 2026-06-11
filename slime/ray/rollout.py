@@ -155,6 +155,7 @@ class ServerGroup:
                     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
                     "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+                    "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1",
                     "SLIME_ENABLE_PROFILING": "true",
                 }.items()
             }
@@ -753,8 +754,11 @@ class RolloutManager:
             ]
 
         # For rollout buffer
-        if samples[0].metadata and "round_number" in samples[0].metadata:
-            train_data["round_number"] = [sample.metadata["round_number"] for sample in samples]
+        if any(sample.metadata and "round_number" in sample.metadata for sample in samples):
+            train_data["round_number"] = [
+                sample.metadata["round_number"] if sample.metadata and "round_number" in sample.metadata else 1
+                for sample in samples
+            ]
 
         # Add rollout log probabilities for off-policy correction
         if samples[0].rollout_log_probs is not None:
@@ -1248,6 +1252,50 @@ def compute_metrics_from_samples(args, samples):
 
     log_dict = {}
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
+    raw_reward_values = []
+    shaped_reward_values = []
+    for sample in samples:
+        try:
+            reward_value = sample.get_reward_value(args)
+        except (KeyError, TypeError):
+            continue
+        if isinstance(reward_value, (int, float, np.number)):
+            shaped_reward = float(reward_value)
+            shaped_reward_values.append(shaped_reward)
+            metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+            raw_reward = metadata.get("raw_reward", shaped_reward)
+            if isinstance(raw_reward, (int, float, np.number)):
+                raw_reward_values.append(float(raw_reward))
+    if raw_reward_values:
+        log_dict |= dict_add_prefix(compute_statistics(raw_reward_values), "raw_reward/")
+    if shaped_reward_values and (
+        len(shaped_reward_values) != len(raw_reward_values)
+        or any(abs(shaped - raw) > 1e-12 for shaped, raw in zip(shaped_reward_values, raw_reward_values, strict=False))
+    ):
+        log_dict |= dict_add_prefix(compute_statistics(shaped_reward_values), "shaped_reward/")
+    overlong_penalties = [
+        sample.metadata["overlong_penalty"]
+        for sample in samples
+        if sample.metadata
+        and isinstance(sample.metadata.get("overlong_penalty"), (int, float, np.number))
+    ]
+    if overlong_penalties:
+        log_dict |= dict_add_prefix(compute_statistics(overlong_penalties), "overlong_penalty/")
+    tool_call_counts = [getattr(sample, "tool_call_count", None) for sample in samples]
+    tool_call_counts = [v for v in tool_call_counts if v is not None]
+    if tool_call_counts:
+        log_dict |= dict_add_prefix(compute_statistics(tool_call_counts), "tool_call_count/")
+    num_turns = [getattr(sample, "num_turns", None) for sample in samples]
+    num_turns = [v for v in num_turns if v is not None]
+    if num_turns:
+        log_dict |= dict_add_prefix(compute_statistics(num_turns), "num_turns/")
+    round_numbers = [
+        sample.metadata["round_number"]
+        for sample in samples
+        if sample.metadata and "round_number" in sample.metadata
+    ]
+    if round_numbers:
+        log_dict |= dict_add_prefix(compute_statistics(round_numbers), "round_number/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
     log_dict |= _compute_prefix_cache_metrics(args, samples)

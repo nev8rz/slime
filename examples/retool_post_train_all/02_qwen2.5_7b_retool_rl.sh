@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Qwen3-8B ReTool RL, initialized from the clean SFT torch-dist checkpoint.
+# Qwen2.5-7B-Instruct ReTool RL, initialized from the clean SFT torch-dist checkpoint.
 
 # for rerun the task
 pkill -9 sglang
@@ -40,6 +40,9 @@ if [ -n "${RL_NUM_ROLLOUT:-}" ]; then
 fi
 RL_ROLLOUT_BATCH_SIZE=${RL_ROLLOUT_BATCH_SIZE:-16}
 RL_N_SAMPLES_PER_PROMPT=${RL_N_SAMPLES_PER_PROMPT:-8}
+RL_ENABLE_DYNAMIC_SAMPLING=${RL_ENABLE_DYNAMIC_SAMPLING:-1}
+RL_OVER_SAMPLING_BATCH_SIZE=${RL_OVER_SAMPLING_BATCH_SIZE:-$((RL_ROLLOUT_BATCH_SIZE * 2))}
+RL_DYNAMIC_SAMPLING_FILTER_PATH=${RL_DYNAMIC_SAMPLING_FILTER_PATH:-slime.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std}
 RL_ROLLOUT_MAX_RESPONSE_LEN=${RL_ROLLOUT_MAX_RESPONSE_LEN:-24576}
 RL_GLOBAL_BATCH_SIZE=${RL_GLOBAL_BATCH_SIZE:-128}
 RL_SAVE_INTERVAL=${RL_SAVE_INTERVAL:-30}
@@ -53,6 +56,14 @@ EVAL_MAX_CONTEXT_LEN=${EVAL_MAX_CONTEXT_LEN:-40960}
 EVAL_MAX_RESPONSE_LEN=${EVAL_MAX_RESPONSE_LEN:-32768}
 EVAL_N_SAMPLES_PER_PROMPT=${EVAL_N_SAMPLES_PER_PROMPT:-8}
 EVAL_INCLUDE_AIME2025=${EVAL_INCLUDE_AIME2025:-0}
+if [ -z "${RL_SGLANG_CONTEXT_LENGTH:-}" ]; then
+   if [ "${EVAL_MAX_CONTEXT_LEN}" -gt "${RL_ROLLOUT_MAX_CONTEXT_LEN}" ]; then
+      RL_SGLANG_CONTEXT_LENGTH="${EVAL_MAX_CONTEXT_LEN}"
+   else
+      RL_SGLANG_CONTEXT_LENGTH="${RL_ROLLOUT_MAX_CONTEXT_LEN}"
+   fi
+fi
+export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN="${SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN:-1}"
 LOG_PASSRATE=${LOG_PASSRATE:-1}
 AUTO_RESUME=${AUTO_RESUME:-1}
 
@@ -60,31 +71,31 @@ RL_ACTOR_NUM_NODES=${RL_ACTOR_NUM_NODES:-1}
 RL_ACTOR_GPUS_PER_NODE=${RL_ACTOR_GPUS_PER_NODE:-8}
 RL_RAY_NUM_GPUS=${RL_RAY_NUM_GPUS:-8}
 
-export MODEL_ARGS_ROTARY_BASE="${QWEN3_8B_ROTARY_BASE}"
-source "${SLIME_ROOT}/scripts/models/qwen3-8B.sh"
+export MODEL_ARGS_ROTARY_BASE="${QWEN2_5_7B_ROTARY_BASE}"
+source "${SLIME_ROOT}/scripts/models/qwen2.5-7B.sh"
 
-QWEN3_8B_RL_EFFECTIVE_LOAD="${QWEN3_8B_RL_LOAD}"
-QWEN3_8B_RL_RESUME_FROM_SAVE=0
-if [ "${AUTO_RESUME}" = "1" ] && has_megatron_checkpoint "${QWEN3_8B_RL_SAVE}"; then
-   QWEN3_8B_RL_EFFECTIVE_LOAD="${QWEN3_8B_RL_SAVE}"
-   QWEN3_8B_RL_RESUME_FROM_SAVE=1
+QWEN2_5_7B_RL_EFFECTIVE_LOAD="${QWEN2_5_7B_RL_LOAD}"
+QWEN2_5_7B_RL_RESUME_FROM_SAVE=0
+if [ "${AUTO_RESUME}" = "1" ] && has_megatron_checkpoint "${QWEN2_5_7B_RL_SAVE}"; then
+   QWEN2_5_7B_RL_EFFECTIVE_LOAD="${QWEN2_5_7B_RL_SAVE}"
+   QWEN2_5_7B_RL_RESUME_FROM_SAVE=1
 fi
-echo "rl initial load: ${QWEN3_8B_RL_LOAD}"
-echo "rl effective load: ${QWEN3_8B_RL_EFFECTIVE_LOAD}"
-echo "rl resume from output save: ${QWEN3_8B_RL_RESUME_FROM_SAVE}"
+echo "rl initial load: ${QWEN2_5_7B_RL_LOAD}"
+echo "rl effective load: ${QWEN2_5_7B_RL_EFFECTIVE_LOAD}"
+echo "rl resume from output save: ${QWEN2_5_7B_RL_RESUME_FROM_SAVE}"
 
 CKPT_ARGS=(
-   --hf-checkpoint "${QWEN3_8B_HF}"
-   --ref-load "${QWEN3_8B_RL_REF_LOAD}"
-   --load "${QWEN3_8B_RL_EFFECTIVE_LOAD}"
-   --save "${QWEN3_8B_RL_SAVE}"
+   --hf-checkpoint "${QWEN2_5_7B_HF}"
+   --ref-load "${QWEN2_5_7B_RL_REF_LOAD}"
+   --load "${QWEN2_5_7B_RL_EFFECTIVE_LOAD}"
+   --save "${QWEN2_5_7B_RL_SAVE}"
    --save-interval "${RL_SAVE_INTERVAL}"
-   --save-hf "${QWEN3_8B_RL_SAVE_HF}"
-   --rotary-base "${QWEN3_8B_ROTARY_BASE}"
+   --save-hf "${QWEN2_5_7B_RL_SAVE_HF}"
+   --rotary-base "${QWEN2_5_7B_ROTARY_BASE}"
 )
 if [ -n "${RL_START_ROLLOUT_ID}" ]; then
    CKPT_ARGS+=(--start-rollout-id "${RL_START_ROLLOUT_ID}")
-elif [ "${QWEN3_8B_RL_RESUME_FROM_SAVE}" != "1" ]; then
+elif [ "${QWEN2_5_7B_RL_RESUME_FROM_SAVE}" != "1" ]; then
    CKPT_ARGS+=(--start-rollout-id 0)
 fi
 
@@ -112,6 +123,12 @@ ROLLOUT_ARGS+=(
    --global-batch-size "${RL_GLOBAL_BATCH_SIZE}"
    --balance-data
 )
+if [ "${RL_ENABLE_DYNAMIC_SAMPLING}" = "1" ]; then
+   ROLLOUT_ARGS+=(
+      --over-sampling-batch-size "${RL_OVER_SAMPLING_BATCH_SIZE}"
+      --dynamic-sampling-filter-path "${RL_DYNAMIC_SAMPLING_FILTER_PATH}"
+   )
+fi
 
 EVAL_ARGS=()
 if [ "${USE_EVAL:-1}" = "1" ]; then
@@ -161,6 +178,7 @@ GRPO_ARGS=(
    --entropy-coef "${RL_ENTROPY_COEF:-0.00}"
    --eps-clip "${RL_EPS_CLIP:-0.2}"
    --eps-clip-high "${RL_EPS_CLIP_HIGH:-0.28}"
+   --calculate-per-token-loss
 )
 
 OPTIMIZER_ARGS=(
@@ -176,8 +194,8 @@ WANDB_ARGS=()
 if [ "${USE_WANDB:-0}" = "1" ]; then
    WANDB_ARGS=(
       --use-wandb
-      --wandb-project "${WANDB_PROJECT:-slime-dapo}"
-      --wandb-group "${WANDB_GROUP:-qwen3-8B-retool-rl}"
+      --wandb-project "${RL_WANDB_PROJECT}"
+      --wandb-group "${WANDB_GROUP:-qwen2.5-7B-retool-rl}"
    )
    if [ -n "${WANDB_KEY:-}" ]; then
       WANDB_ARGS+=(--wandb-key "${WANDB_KEY}")
@@ -186,6 +204,7 @@ fi
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine "${RL_ROLLOUT_NUM_GPUS_PER_ENGINE:-2}"
+   --sglang-context-length "${RL_SGLANG_CONTEXT_LENGTH}"
    --sglang-mem-fraction-static "${RL_SGLANG_MEM_FRACTION_STATIC:-0.4}"
 )
 
@@ -220,16 +239,8 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"${MEGATRON_PATH}:${SCRIPT_DIR}:${SLIME_ROOT}\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"HTTP_PROXY\": \"${HTTP_PROXY:-}\",
-    \"HTTPS_PROXY\": \"${HTTPS_PROXY:-}\",
-    \"http_proxy\": \"${http_proxy:-}\",
-    \"https_proxy\": \"${https_proxy:-}\",
-    \"NO_PROXY\": \"${NO_PROXY:-}\",
-    \"no_proxy\": \"${no_proxy:-}\",
-    \"WANDB_HTTP_PROXY\": \"${WANDB_HTTP_PROXY:-${HTTP_PROXY:-}}\",
-    \"WANDB_HTTPS_PROXY\": \"${WANDB_HTTPS_PROXY:-${HTTPS_PROXY:-}}\",
-    \"WANDB_NO_PROXY\": \"${WANDB_NO_PROXY:-${NO_PROXY:-}}\",
-    \"RETOOL_THINKING_MODE\": \"${RETOOL_THINKING_MODE:-think}\"
+    \"RETOOL_THINKING_MODE\": \"${RETOOL_THINKING_MODE:-no_think}\",
+    \"SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN\": \"${SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN}\"
   }
 }"
 

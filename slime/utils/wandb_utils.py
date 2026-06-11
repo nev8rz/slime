@@ -6,6 +6,82 @@ import wandb
 
 logger = logging.getLogger(__name__)
 
+# Proxy-style env vars. Two problems are handled here so launch/stage scripts
+# don't need any proxy bookkeeping:
+#   1) On some clusters the machine can only reach api.wandb.ai through an HTTP
+#      proxy. The proxy config lives in `<SLIME_ROOT>/.env` (or `$SLIME_ENV_FILE`),
+#      but ray worker processes don't always inherit a shell that sourced it, so
+#      we load the proxy vars from that file here when they're missing.
+#   2) Newer wandb validates proxy vars as URLs via pydantic and crashes on empty
+#      strings ("Input should be a valid URL, input is empty"). Ray runtime envs
+#      often inject these as "", so we strip the empty ones.
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "WANDB_HTTP_PROXY",
+    "WANDB_HTTPS_PROXY",
+    "WANDB_NO_PROXY",
+)
+
+
+def _candidate_env_files() -> list[str]:
+    candidates = []
+    explicit = os.environ.get("SLIME_ENV_FILE")
+    if explicit:
+        candidates.append(explicit)
+    slime_root = os.environ.get("SLIME_ROOT")
+    if slime_root:
+        candidates.append(os.path.join(slime_root, ".env"))
+    candidates.append(os.path.join(os.getcwd(), ".env"))
+    return candidates
+
+
+def _load_proxy_from_env_file() -> None:
+    """Populate proxy env vars from the project .env when missing/empty.
+
+    Only fills proxy-related keys, and never overrides a non-empty existing value.
+    """
+    for path in _candidate_env_files():
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key in _PROXY_ENV_VARS and value and not os.environ.get(key):
+                os.environ[key] = value
+        break  # first existing env file wins
+
+
+def _setup_proxy_env_vars() -> None:
+    _load_proxy_from_env_file()
+    # Drop empty strings that would fail wandb's URL validation.
+    for name in _PROXY_ENV_VARS:
+        if os.environ.get(name, None) == "":
+            del os.environ[name]
+    # wandb reads WANDB_HTTP(S)_PROXY; fall back to the generic proxy if unset.
+    if not os.environ.get("WANDB_HTTP_PROXY") and os.environ.get("HTTP_PROXY"):
+        os.environ["WANDB_HTTP_PROXY"] = os.environ["HTTP_PROXY"]
+    if not os.environ.get("WANDB_HTTPS_PROXY") and os.environ.get("HTTPS_PROXY"):
+        os.environ["WANDB_HTTPS_PROXY"] = os.environ["HTTPS_PROXY"]
+
+
+def setup_wandb_env_vars() -> None:
+    """Prepare W&B proxy env vars before direct wandb API use."""
+    _setup_proxy_env_vars()
+
 
 def _is_offline_mode(args) -> bool:
     """Detect whether W&B should run in offline mode.
@@ -23,6 +99,8 @@ def init_wandb_primary(args):
     if not args.use_wandb:
         args.wandb_run_id = None
         return
+
+    _setup_proxy_env_vars()
 
     # Set W&B mode if specified (overrides WANDB_MODE env var)
     if args.wandb_mode:
@@ -124,6 +202,8 @@ def init_wandb_secondary(args, role=None):
     wandb_run_id = getattr(args, "wandb_run_id", None)
     if wandb_run_id is None:
         return
+
+    _setup_proxy_env_vars()
 
     # Set W&B mode if specified (same as primary)
     if args.wandb_mode:

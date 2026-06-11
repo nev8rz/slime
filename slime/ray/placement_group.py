@@ -224,6 +224,12 @@ def create_rollout_manager(args, pg):
             "no_proxy",
             "NO_PROXY",
             "RETOOL_THINKING_MODE",
+            "RETOOL_MAX_NEW_TOKENS_PER_TURN",
+            "RETOOL_OVERLONG_PENALTY_ENABLE",
+            "RETOOL_OVERLONG_MAX_RESPONSE_LEN",
+            "RETOOL_OVERLONG_BUFFER_LEN",
+            "RETOOL_OVERLONG_PENALTY_FACTOR",
+            "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN",
         )
         if (value := os.environ.get(key))
     }
